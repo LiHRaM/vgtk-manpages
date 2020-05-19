@@ -3,7 +3,7 @@
 use vgtk::ext::*;
 use vgtk::lib::gio::ApplicationFlags;
 use vgtk::lib::gtk::*;
-use vgtk::{gtk, gtk_if, run, Component, UpdateAction, VNode};
+use vgtk::{gtk, run, Component, UpdateAction, VNode};
 
 use commands::{man2html, manpages, manpath};
 
@@ -22,15 +22,11 @@ struct Model {
 
 impl Default for Model {
     fn default() -> Self {
-        let paths = manpath();
-        let pages = manpages(&paths);
-        let manpage = man2html(pages.first().unwrap()).unwrap();
-
         Self {
-            paths,
-            pages,
+            paths: vec![],
+            pages: vec![],
             filter: None,
-            manpage,
+            manpage: include_str!("index.html").to_string(),
         }
     }
 }
@@ -38,7 +34,9 @@ impl Default for Model {
 #[derive(Clone, Debug)]
 enum Message {
     Exit,
-    FilterPages(Option<String>),
+    Search(String),
+    SearchResult(Vec<String>),
+    NoOp,
     LoadManpage(String),
 }
 
@@ -48,16 +46,27 @@ impl Component for Model {
 
     fn update(&mut self, msg: Self::Message) -> UpdateAction<Self> {
         match msg {
+            Message::NoOp => UpdateAction::None,
             Message::Exit => {
                 vgtk::quit();
                 UpdateAction::None
             }
-            Message::FilterPages(filter) => {
-                self.filter = filter;
-                UpdateAction::Render
-            }
             Message::LoadManpage(path) => {
                 self.manpage = man2html(&path).expect("LoadManpage failed!");
+                UpdateAction::Render
+            }
+            Message::Search(search_string) => UpdateAction::defer(async {
+                let paths = manpath();
+                let pages = manpages(&paths)
+                    .iter()
+                    .filter(move |item| item.contains(&search_string))
+                    .map(|item| item.to_owned())
+                    .collect::<Vec<_>>();
+
+                Message::SearchResult(pages)
+            }),
+            Message::SearchResult(res) => {
+                self.pages = res;
                 UpdateAction::Render
             }
         }
@@ -73,15 +82,15 @@ impl Component for Model {
                                 <SearchEntry placeholder_text="Ask, and you shall receive." on activate=|entry| {
                                     let input = entry.get_text().map(|s| s.to_string()).unwrap_or_default();
                                     match input.is_empty() {
-                                        true => Message::FilterPages(None),
-                                        false => Message::FilterPages(Some(input))
+                                        true => Message::NoOp,
+                                        false => Message::Search(input)
                                     }
                                 }/>
                             </SearchBar>
                             <ScrolledWindow Box::fill=true Box::expand=true>
                                 <ListBox>
                                     {
-                                        self.filter(self.filter.clone()).map(|page| gtk! {
+                                        self.pages.iter().map(|page| gtk! {
                                             <ListBoxRow>
                                                 <LinkButton uri=page.clone() on clicked=|el| Message::LoadManpage(el.get_uri().map(|s| s.to_string()).unwrap_or_default())>
                                                     <Label xalign=0.0 label=get_name(&page) />
@@ -92,27 +101,18 @@ impl Component for Model {
                                 </ListBox>
                             </ScrolledWindow>
                         </Box>
-                        {
-                            gtk_if!( !self.manpage.is_empty() => {
-                                <Box>
-                                    <WebView html=self.manpage.clone() Box::expand=true />
-                                </Box>
-                            })
-                        }
+                        <Box Paned::shrink=true>
+                            <WebView html=self.manpage.clone() Box::expand=true />
+                        </Box>
                     </Paned>
                 </ApplicationWindow>
             </Application>
         }
     }
-}
 
-impl<'a> Model {
-    fn filter(&self, filter: Option<String>) -> impl Iterator<Item = &String> {
-        self.pages.iter().filter(move |item| match filter {
-            Some(ref n) => item.contains(n),
-            None => true,
-        })
-    }
+    fn mounted(&mut self) {}
+
+    fn unmounted(&mut self) {}
 }
 
 fn get_name(path: &str) -> String {
